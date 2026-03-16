@@ -1,3 +1,11 @@
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
+import java.io.Serializable;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
@@ -87,6 +95,10 @@ public class BookMyStayApp {
         System.out.println("Concurrent Booking Simulation");
         System.out.println("====================================");
         runConcurrentBookingSimulation();
+
+        System.out.println("Persistence And Recovery");
+        System.out.println("====================================");
+        runPersistenceRecoverySimulation(inventoryService, bookingHistory);
     }
 
     private static void attachSampleAddOns(BookingHistory bookingHistory, AddOnServiceManager addOnServiceManager) {
@@ -184,6 +196,100 @@ public class BookMyStayApp {
         System.out.println("====================================");
         concurrentInventoryService.displayInventory();
     }
+
+    private static void runPersistenceRecoverySimulation(InventoryService inventoryService,
+                                                         BookingHistory bookingHistory) {
+        long persistenceRunId = System.currentTimeMillis();
+        Path validStatePath = Path.of(
+                System.getProperty("java.io.tmpdir"),
+                "bookmystay-uc12-state-" + persistenceRunId + ".ser"
+        );
+        Path missingStatePath = Path.of(
+                System.getProperty("java.io.tmpdir"),
+                "bookmystay-uc12-missing-" + persistenceRunId + ".ser"
+        );
+        Path corruptedStatePath = Path.of(
+                System.getProperty("java.io.tmpdir"),
+                "bookmystay-uc12-corrupted-" + persistenceRunId + ".ser"
+        );
+
+        PersistenceRuntime missingStateRuntime = createPersistenceRuntime();
+        PersistenceService missingStatePersistenceService = new PersistenceService(missingStatePath);
+        missingStatePersistenceService.restoreState(
+                missingStateRuntime.getInventoryService(),
+                missingStateRuntime.getBookingHistory(),
+                missingStateRuntime.getBookingService()
+        );
+
+        PersistenceService persistenceService = new PersistenceService(validStatePath);
+        persistenceService.saveState(inventoryService, bookingHistory);
+
+        PersistenceRuntime restoredRuntime = createPersistenceRuntime();
+        persistenceService.restoreState(
+                restoredRuntime.getInventoryService(),
+                restoredRuntime.getBookingHistory(),
+                restoredRuntime.getBookingService()
+        );
+
+        System.out.println("Recovered Booking History");
+        System.out.println("====================================");
+        BookingReportService restoredBookingReportService =
+                new BookingReportService(restoredRuntime.getBookingHistory());
+        restoredBookingReportService.displayBookingHistory();
+
+        System.out.println("Recovered Inventory State");
+        System.out.println("====================================");
+        restoredRuntime.getInventoryService().displayInventory();
+
+        System.out.println("Post-Recovery Booking Request");
+        System.out.println("====================================");
+        submitBookingRequest(
+                restoredRuntime.getBookingRequestQueue(),
+                new Reservation("Anaya", "Double Room", 2)
+        );
+        restoredRuntime.getBookingService().processAllRequests();
+        restoredRuntime.getBookingService().displayAllocatedRooms(restoredRuntime.getRoomCatalog());
+        restoredRuntime.getInventoryService().displayInventory();
+
+        PersistenceService corruptedStatePersistenceService = new PersistenceService(corruptedStatePath);
+        corruptedStatePersistenceService.writeCorruptedStateForDemo();
+
+        System.out.println("Corrupted Recovery Attempt");
+        System.out.println("====================================");
+        PersistenceRuntime corruptedStateRuntime = createPersistenceRuntime();
+        corruptedStatePersistenceService.restoreState(
+                corruptedStateRuntime.getInventoryService(),
+                corruptedStateRuntime.getBookingHistory(),
+                corruptedStateRuntime.getBookingService()
+        );
+        corruptedStateRuntime.getInventoryService().displayInventory();
+    }
+
+    private static PersistenceRuntime createPersistenceRuntime() {
+        Room singleRoom = new SingleRoom();
+        Room doubleRoom = new DoubleRoom();
+        Room suiteRoom = new SuiteRoom();
+        Room[] roomCatalog = {singleRoom, doubleRoom, suiteRoom};
+        RoomInventory roomInventory = new RoomInventory(singleRoom, 5, doubleRoom, 3, suiteRoom, 0);
+        InventoryService inventoryService = new InventoryService(roomInventory);
+        InvalidBookingValidator invalidBookingValidator = new InvalidBookingValidator(inventoryService);
+        BookingRequestQueue bookingRequestQueue = new BookingRequestQueue(invalidBookingValidator);
+        BookingHistory bookingHistory = new BookingHistory();
+        BookingService bookingService = new BookingService(
+                bookingRequestQueue,
+                inventoryService,
+                bookingHistory,
+                invalidBookingValidator
+        );
+
+        return new PersistenceRuntime(
+                roomCatalog,
+                inventoryService,
+                bookingRequestQueue,
+                bookingHistory,
+                bookingService
+        );
+    }
 }
 
 abstract class Room {
@@ -275,6 +381,39 @@ class RoomInventory {
         }
         System.out.println("------------------------------------");
     }
+
+    public HashMap<String, Integer> getAvailabilitySnapshot() {
+        return new HashMap<>(roomAvailability);
+    }
+
+    public void restoreAvailabilitySnapshot(Map<String, Integer> availabilitySnapshot)
+            throws InventoryStateException {
+        if (availabilitySnapshot == null || availabilitySnapshot.isEmpty()) {
+            throw new InventoryStateException("Persisted inventory snapshot is missing or empty.");
+        }
+
+        for (String roomType : roomAvailability.keySet()) {
+            if (!availabilitySnapshot.containsKey(roomType)) {
+                throw new InventoryStateException("Persisted inventory snapshot is incomplete for " + roomType + ".");
+            }
+        }
+
+        for (Map.Entry<String, Integer> inventoryEntry : availabilitySnapshot.entrySet()) {
+            if (!roomAvailability.containsKey(inventoryEntry.getKey())) {
+                throw new InventoryStateException("Persisted inventory snapshot contains unknown room type: "
+                        + inventoryEntry.getKey());
+            }
+
+            if (inventoryEntry.getValue() == null || inventoryEntry.getValue() < 0) {
+                throw new InventoryStateException("Persisted inventory snapshot contains invalid availability for "
+                        + inventoryEntry.getKey() + ".");
+            }
+        }
+
+        for (Map.Entry<String, Integer> inventoryEntry : availabilitySnapshot.entrySet()) {
+            updateAvailability(inventoryEntry.getKey(), inventoryEntry.getValue());
+        }
+    }
 }
 
 class InventoryService {
@@ -316,6 +455,15 @@ class InventoryService {
 
     public synchronized void displayInventory() {
         roomInventory.displayInventory();
+    }
+
+    public synchronized HashMap<String, Integer> getInventorySnapshot() {
+        return roomInventory.getAvailabilitySnapshot();
+    }
+
+    public synchronized void restoreInventorySnapshot(Map<String, Integer> availabilitySnapshot)
+            throws InventoryStateException {
+        roomInventory.restoreAvailabilitySnapshot(availabilitySnapshot);
     }
 }
 
@@ -586,6 +734,38 @@ class BookingService {
         }
     }
 
+    public void restoreAllocationState(List<ConfirmedReservation> storedReservations) {
+        synchronized (allocationLock) {
+            allocatedRoomIds.clear();
+            allocatedRoomsByType.clear();
+            nextRoomSequenceByType.clear();
+            nextReservationSequence = 1;
+
+            if (storedReservations == null || storedReservations.isEmpty()) {
+                return;
+            }
+
+            for (ConfirmedReservation confirmedReservation : storedReservations) {
+                if (confirmedReservation == null) {
+                    continue;
+                }
+
+                updateReservationSequence(confirmedReservation.getReservationId());
+                updateRoomSequence(confirmedReservation.getRoomType(), confirmedReservation.getAssignedRoomId());
+
+                if (confirmedReservation.isCancelled()) {
+                    continue;
+                }
+
+                allocatedRoomIds.add(confirmedReservation.getAssignedRoomId());
+                allocatedRoomsByType.computeIfAbsent(
+                        confirmedReservation.getRoomType(),
+                        key -> new LinkedHashSet<>()
+                ).add(confirmedReservation.getAssignedRoomId());
+            }
+        }
+    }
+
     private void confirmReservation(Reservation reservation, String processorName)
             throws BookingValidationException, InventoryStateException {
         invalidBookingValidator.validateBookingInput(reservation);
@@ -645,6 +825,21 @@ class BookingService {
         return Integer.parseInt(numericPortion) + 1;
     }
 
+    private void updateReservationSequence(String reservationId) {
+        int nextSequenceValue = getNextSequenceValue(reservationId);
+        if (nextSequenceValue > nextReservationSequence) {
+            nextReservationSequence = nextSequenceValue;
+        }
+    }
+
+    private void updateRoomSequence(String roomType, String roomId) {
+        int nextSequenceValue = getNextSequenceValue(roomId);
+        int currentNextSequence = nextRoomSequenceByType.getOrDefault(roomType, 1);
+        if (nextSequenceValue > currentNextSequence) {
+            nextRoomSequenceByType.put(roomType, nextSequenceValue);
+        }
+    }
+
     private String getRoomPrefix(String roomType) {
         if ("Single Room".equals(roomType)) {
             return "SNG";
@@ -699,12 +894,17 @@ class ConfirmedReservation {
 
     ConfirmedReservation(String reservationId, String guestName, String roomType, int numberOfNights,
                          String assignedRoomId) {
+        this(reservationId, guestName, roomType, numberOfNights, assignedRoomId, false);
+    }
+
+    ConfirmedReservation(String reservationId, String guestName, String roomType, int numberOfNights,
+                         String assignedRoomId, boolean cancelled) {
         this.reservationId = reservationId;
         this.guestName = guestName;
         this.roomType = roomType;
         this.numberOfNights = numberOfNights;
         this.assignedRoomId = assignedRoomId;
-        this.cancelled = false;
+        this.cancelled = cancelled;
     }
 
     public String getReservationId() {
@@ -844,6 +1044,32 @@ class BookingHistory {
         }
 
         confirmedReservation.markCancelled();
+    }
+
+    public synchronized List<PersistedReservationRecord> getPersistenceRecords() {
+        List<PersistedReservationRecord> persistedReservationRecords = new ArrayList<>();
+        for (ConfirmedReservation confirmedReservation : confirmedReservations) {
+            persistedReservationRecords.add(
+                    PersistedReservationRecord.fromConfirmedReservation(confirmedReservation)
+            );
+        }
+
+        return persistedReservationRecords;
+    }
+
+    public synchronized void restoreHistory(List<PersistedReservationRecord> persistedReservationRecords) {
+        confirmedReservations.clear();
+        if (persistedReservationRecords == null) {
+            return;
+        }
+
+        for (PersistedReservationRecord persistedReservationRecord : persistedReservationRecords) {
+            if (persistedReservationRecord == null) {
+                continue;
+            }
+
+            confirmedReservations.add(persistedReservationRecord.toConfirmedReservation());
+        }
     }
 }
 
@@ -1139,6 +1365,173 @@ class AddOnServiceManager {
                 && addOnService.getServiceName() != null
                 && !addOnService.getServiceName().isBlank()
                 && addOnService.getServiceCost() >= 0;
+    }
+}
+
+class PersistenceRuntime {
+    private final Room[] roomCatalog;
+    private final InventoryService inventoryService;
+    private final BookingRequestQueue bookingRequestQueue;
+    private final BookingHistory bookingHistory;
+    private final BookingService bookingService;
+
+    PersistenceRuntime(Room[] roomCatalog, InventoryService inventoryService,
+                       BookingRequestQueue bookingRequestQueue, BookingHistory bookingHistory,
+                       BookingService bookingService) {
+        this.roomCatalog = roomCatalog;
+        this.inventoryService = inventoryService;
+        this.bookingRequestQueue = bookingRequestQueue;
+        this.bookingHistory = bookingHistory;
+        this.bookingService = bookingService;
+    }
+
+    public Room[] getRoomCatalog() {
+        return roomCatalog;
+    }
+
+    public InventoryService getInventoryService() {
+        return inventoryService;
+    }
+
+    public BookingRequestQueue getBookingRequestQueue() {
+        return bookingRequestQueue;
+    }
+
+    public BookingHistory getBookingHistory() {
+        return bookingHistory;
+    }
+
+    public BookingService getBookingService() {
+        return bookingService;
+    }
+}
+
+class PersistedReservationRecord implements Serializable {
+    private static final long serialVersionUID = 1L;
+
+    private final String reservationId;
+    private final String guestName;
+    private final String roomType;
+    private final int numberOfNights;
+    private final String assignedRoomId;
+    private final boolean cancelled;
+
+    PersistedReservationRecord(String reservationId, String guestName, String roomType,
+                               int numberOfNights, String assignedRoomId, boolean cancelled) {
+        this.reservationId = reservationId;
+        this.guestName = guestName;
+        this.roomType = roomType;
+        this.numberOfNights = numberOfNights;
+        this.assignedRoomId = assignedRoomId;
+        this.cancelled = cancelled;
+    }
+
+    public static PersistedReservationRecord fromConfirmedReservation(ConfirmedReservation confirmedReservation) {
+        return new PersistedReservationRecord(
+                confirmedReservation.getReservationId(),
+                confirmedReservation.getGuestName(),
+                confirmedReservation.getRoomType(),
+                confirmedReservation.getNumberOfNights(),
+                confirmedReservation.getAssignedRoomId(),
+                confirmedReservation.isCancelled()
+        );
+    }
+
+    public ConfirmedReservation toConfirmedReservation() {
+        return new ConfirmedReservation(
+                reservationId,
+                guestName,
+                roomType,
+                numberOfNights,
+                assignedRoomId,
+                cancelled
+        );
+    }
+}
+
+class SystemStateSnapshot implements Serializable {
+    private static final long serialVersionUID = 1L;
+
+    private final HashMap<String, Integer> inventorySnapshot;
+    private final List<PersistedReservationRecord> bookingHistorySnapshot;
+
+    SystemStateSnapshot(HashMap<String, Integer> inventorySnapshot,
+                        List<PersistedReservationRecord> bookingHistorySnapshot) {
+        this.inventorySnapshot = new HashMap<>(inventorySnapshot);
+        this.bookingHistorySnapshot = new ArrayList<>(bookingHistorySnapshot);
+    }
+
+    public HashMap<String, Integer> getInventorySnapshot() {
+        return new HashMap<>(inventorySnapshot);
+    }
+
+    public List<PersistedReservationRecord> getBookingHistorySnapshot() {
+        return new ArrayList<>(bookingHistorySnapshot);
+    }
+}
+
+class PersistenceService {
+    private final Path persistencePath;
+
+    PersistenceService(Path persistencePath) {
+        this.persistencePath = persistencePath;
+    }
+
+    public void saveState(InventoryService inventoryService, BookingHistory bookingHistory) {
+        SystemStateSnapshot systemStateSnapshot = new SystemStateSnapshot(
+                inventoryService.getInventorySnapshot(),
+                bookingHistory.getPersistenceRecords()
+        );
+
+        try (ObjectOutputStream objectOutputStream =
+                     new ObjectOutputStream(new FileOutputStream(persistencePath.toFile()))) {
+            objectOutputStream.writeObject(systemStateSnapshot);
+            System.out.println("Persisted system state to " + persistencePath);
+            System.out.println("------------------------------------");
+        } catch (IOException exception) {
+            System.out.println("Persistence save failed: " + exception.getMessage());
+            System.out.println("------------------------------------");
+        }
+    }
+
+    public void restoreState(InventoryService inventoryService, BookingHistory bookingHistory,
+                             BookingService bookingService) {
+        if (!Files.exists(persistencePath)) {
+            System.out.println("No persistence file found at startup. Continuing with safe defaults.");
+            System.out.println("------------------------------------");
+            return;
+        }
+
+        try (ObjectInputStream objectInputStream =
+                     new ObjectInputStream(new FileInputStream(persistencePath.toFile()))) {
+            Object restoredObject = objectInputStream.readObject();
+            if (!(restoredObject instanceof SystemStateSnapshot)) {
+                System.out.println("Persistence recovery failed: unsupported state format.");
+                System.out.println("Continuing with safe defaults.");
+                System.out.println("------------------------------------");
+                return;
+            }
+
+            SystemStateSnapshot systemStateSnapshot = (SystemStateSnapshot) restoredObject;
+            inventoryService.restoreInventorySnapshot(systemStateSnapshot.getInventorySnapshot());
+            bookingHistory.restoreHistory(systemStateSnapshot.getBookingHistorySnapshot());
+            bookingService.restoreAllocationState(bookingHistory.getConfirmedReservations());
+            System.out.println("Recovered persisted system state from " + persistencePath);
+            System.out.println("------------------------------------");
+        } catch (IOException | ClassNotFoundException | InventoryStateException exception) {
+            System.out.println("Persistence recovery failed: " + exception.getMessage());
+            System.out.println("Continuing with safe defaults.");
+            System.out.println("------------------------------------");
+        }
+    }
+
+    public void writeCorruptedStateForDemo() {
+        try (FileOutputStream fileOutputStream = new FileOutputStream(persistencePath.toFile())) {
+            fileOutputStream.write(new byte[] {1, 3, 5, 7});
+        } catch (IOException exception) {
+            System.out.println("Unable to prepare corrupted persistence demo: " + exception.getMessage());
+            System.out.println("------------------------------------");
+        }
     }
 }
 
