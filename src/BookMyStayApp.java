@@ -17,7 +17,9 @@ public class BookMyStayApp {
         InventoryService inventoryService = new InventoryService(roomInventory);
         SearchService searchService = new SearchService(inventoryService);
         BookingRequestQueue bookingRequestQueue = new BookingRequestQueue();
-        BookingService bookingService = new BookingService(bookingRequestQueue, inventoryService);
+        BookingHistory bookingHistory = new BookingHistory();
+        BookingService bookingService = new BookingService(bookingRequestQueue, inventoryService, bookingHistory);
+        BookingReportService bookingReportService = new BookingReportService(bookingHistory);
         AddOnServiceManager addOnServiceManager = new AddOnServiceManager();
 
         System.out.println("====================================");
@@ -39,14 +41,18 @@ public class BookMyStayApp {
         System.out.println("====================================");
         bookingService.processAllRequests();
 
-        System.out.println("Confirmed Reservations");
+        System.out.println("Admin Booking History Review");
         System.out.println("====================================");
-        bookingService.displayConfirmedReservations();
+        bookingReportService.displayBookingHistory();
 
         System.out.println("Add-On Service Selection");
         System.out.println("====================================");
-        attachSampleAddOns(bookingService, addOnServiceManager);
-        addOnServiceManager.displaySelectedServices(bookingService.getConfirmedReservations());
+        attachSampleAddOns(bookingHistory, addOnServiceManager);
+        addOnServiceManager.displaySelectedServices(bookingHistory.getConfirmedReservations());
+
+        System.out.println("Booking Summary Report");
+        System.out.println("====================================");
+        bookingReportService.displaySummaryReport();
 
         System.out.println("Allocated Room Records");
         System.out.println("====================================");
@@ -57,8 +63,8 @@ public class BookMyStayApp {
         inventoryService.displayInventory();
     }
 
-    private static void attachSampleAddOns(BookingService bookingService, AddOnServiceManager addOnServiceManager) {
-        List<ConfirmedReservation> confirmedReservations = bookingService.getConfirmedReservations();
+    private static void attachSampleAddOns(BookingHistory bookingHistory, AddOnServiceManager addOnServiceManager) {
+        List<ConfirmedReservation> confirmedReservations = bookingHistory.getConfirmedReservations();
         if (confirmedReservations.isEmpty()) {
             System.out.println("No confirmed reservations available for add-on selection.");
             System.out.println("------------------------------------");
@@ -335,19 +341,20 @@ class BookingRequestQueue {
 class BookingService {
     private final BookingRequestQueue bookingRequestQueue;
     private final InventoryService inventoryService;
+    private final BookingHistory bookingHistory;
     private final Set<String> allocatedRoomIds;
     private final HashMap<String, Set<String>> allocatedRoomsByType;
     private final HashMap<String, Integer> nextRoomSequenceByType;
-    private final List<ConfirmedReservation> confirmedReservations;
     private int nextReservationSequence;
 
-    BookingService(BookingRequestQueue bookingRequestQueue, InventoryService inventoryService) {
+    BookingService(BookingRequestQueue bookingRequestQueue, InventoryService inventoryService,
+                   BookingHistory bookingHistory) {
         this.bookingRequestQueue = bookingRequestQueue;
         this.inventoryService = inventoryService;
+        this.bookingHistory = bookingHistory;
         allocatedRoomIds = new LinkedHashSet<>();
         allocatedRoomsByType = new HashMap<>();
         nextRoomSequenceByType = new HashMap<>();
-        confirmedReservations = new ArrayList<>();
         nextReservationSequence = 1;
     }
 
@@ -389,7 +396,7 @@ class BookingService {
 
         recordAllocation(roomType, assignedRoomId);
         ConfirmedReservation confirmedReservation = createConfirmedReservation(reservation, assignedRoomId);
-        confirmedReservations.add(confirmedReservation);
+        bookingHistory.storeConfirmedReservation(confirmedReservation);
         System.out.println("Reservation confirmed for " + reservation.getGuestName());
         System.out.println("Reservation ID: " + confirmedReservation.getReservationId());
         System.out.println("Requested Room Type: " + roomType);
@@ -399,24 +406,7 @@ class BookingService {
     }
 
     public List<ConfirmedReservation> getConfirmedReservations() {
-        return new ArrayList<>(confirmedReservations);
-    }
-
-    public void displayConfirmedReservations() {
-        if (confirmedReservations.isEmpty()) {
-            System.out.println("No reservations have been confirmed.");
-            System.out.println("------------------------------------");
-            return;
-        }
-
-        for (ConfirmedReservation confirmedReservation : confirmedReservations) {
-            System.out.println("Reservation ID: " + confirmedReservation.getReservationId());
-            System.out.println("Guest: " + confirmedReservation.getGuestName());
-            System.out.println("Room Type: " + confirmedReservation.getRoomType());
-            System.out.println("Assigned Room ID: " + confirmedReservation.getAssignedRoomId());
-            System.out.println("Nights: " + confirmedReservation.getNumberOfNights());
-            System.out.println("------------------------------------");
-        }
+        return bookingHistory.getConfirmedReservations();
     }
 
     public void displayAllocatedRooms(Room[] rooms) {
@@ -528,6 +518,83 @@ class ConfirmedReservation {
 
     public String getAssignedRoomId() {
         return assignedRoomId;
+    }
+}
+
+class BookingHistory {
+    private final List<ConfirmedReservation> confirmedReservations;
+
+    BookingHistory() {
+        confirmedReservations = new ArrayList<>();
+    }
+
+    public void storeConfirmedReservation(ConfirmedReservation confirmedReservation) {
+        if (confirmedReservation == null) {
+            return;
+        }
+
+        confirmedReservations.add(confirmedReservation);
+    }
+
+    public List<ConfirmedReservation> getConfirmedReservations() {
+        return new ArrayList<>(confirmedReservations);
+    }
+
+    public boolean hasConfirmedReservations() {
+        return !confirmedReservations.isEmpty();
+    }
+}
+
+class BookingReportService {
+    private final BookingHistory bookingHistory;
+
+    BookingReportService(BookingHistory bookingHistory) {
+        this.bookingHistory = bookingHistory;
+    }
+
+    public void displayBookingHistory() {
+        List<ConfirmedReservation> storedReservations = bookingHistory.getConfirmedReservations();
+        if (storedReservations.isEmpty()) {
+            System.out.println("No booking history available.");
+            System.out.println("------------------------------------");
+            return;
+        }
+
+        int bookingPosition = 1;
+        for (ConfirmedReservation confirmedReservation : storedReservations) {
+            System.out.println("Booking " + bookingPosition++);
+            System.out.println("Reservation ID: " + confirmedReservation.getReservationId());
+            System.out.println("Guest: " + confirmedReservation.getGuestName());
+            System.out.println("Room Type: " + confirmedReservation.getRoomType());
+            System.out.println("Assigned Room ID: " + confirmedReservation.getAssignedRoomId());
+            System.out.println("Nights: " + confirmedReservation.getNumberOfNights());
+            System.out.println("------------------------------------");
+        }
+    }
+
+    public void displaySummaryReport() {
+        List<ConfirmedReservation> storedReservations = bookingHistory.getConfirmedReservations();
+        if (storedReservations.isEmpty()) {
+            System.out.println("No booking data available for reporting.");
+            System.out.println("------------------------------------");
+            return;
+        }
+
+        HashMap<String, Integer> bookingsByRoomType = new HashMap<>();
+        int totalNightsBooked = 0;
+
+        for (ConfirmedReservation confirmedReservation : storedReservations) {
+            bookingsByRoomType.merge(confirmedReservation.getRoomType(), 1, Integer::sum);
+            totalNightsBooked += confirmedReservation.getNumberOfNights();
+        }
+
+        System.out.println("Total Confirmed Reservations: " + storedReservations.size());
+        System.out.println("Total Nights Booked: " + totalNightsBooked);
+        System.out.println("Bookings By Room Type");
+        for (Map.Entry<String, Integer> bookingEntry : bookingsByRoomType.entrySet()) {
+            System.out.println(bookingEntry.getKey() + ": " + bookingEntry.getValue());
+        }
+        System.out.println("------------------------------------");
     }
 }
 
