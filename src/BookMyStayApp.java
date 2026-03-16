@@ -6,37 +6,17 @@ public class BookMyStayApp {
         Room singleRoom = new SingleRoom();
         Room doubleRoom = new DoubleRoom();
         Room suiteRoom = new SuiteRoom();
-        RoomInventory roomInventory = new RoomInventory(singleRoom, 5, doubleRoom, 3, suiteRoom, 2);
+        Room[] roomCatalog = {singleRoom, doubleRoom, suiteRoom};
+        RoomInventory roomInventory = new RoomInventory(singleRoom, 5, doubleRoom, 3, suiteRoom, 0);
+        SearchService searchService = new SearchService(roomInventory);
 
         System.out.println("====================================");
         System.out.println("   Welcome to the Hotel Booking System");
         System.out.println("   Application Version: 1.0");
         System.out.println("====================================");
-        System.out.println("Available Room Types");
+        System.out.println("Guest Room Search");
         System.out.println("====================================");
-
-        printRoomAvailability(singleRoom, roomInventory.getAvailability(singleRoom.getRoomType()));
-        printRoomAvailability(doubleRoom, roomInventory.getAvailability(doubleRoom.getRoomType()));
-        printRoomAvailability(suiteRoom, roomInventory.getAvailability(suiteRoom.getRoomType()));
-
-        System.out.println("Inventory Snapshot");
-        System.out.println("====================================");
-        roomInventory.displayInventory();
-
-        System.out.println("Updating Double Room availability to 2");
-        roomInventory.updateAvailability(doubleRoom.getRoomType(), 2);
-        System.out.println("Updated Inventory Snapshot");
-        System.out.println("====================================");
-        roomInventory.displayInventory();
-    }
-
-    private static void printRoomAvailability(Room room, int availability) {
-        System.out.println("Room Type: " + room.getRoomType());
-        System.out.println("Beds: " + room.getNumberOfBeds());
-        System.out.println("Size: " + room.getSizeInSquareFeet() + " sq ft");
-        System.out.printf("Price Per Night: $%.2f%n", room.getPricePerNight());
-        System.out.println("Available Rooms: " + availability);
-        System.out.println("------------------------------------");
+        searchService.displayAvailableRooms(roomCatalog);
     }
 }
 
@@ -125,6 +105,56 @@ class RoomInventory {
         for (Map.Entry<String, Integer> inventoryEntry : roomAvailability.entrySet()) {
             System.out.println(inventoryEntry.getKey() + ": " + inventoryEntry.getValue() + " rooms available");
         }
+        System.out.println("------------------------------------");
+    }
+}
+
+class SearchService {
+    private final RoomInventory roomInventory;
+
+    SearchService(RoomInventory roomInventory) {
+        this.roomInventory = roomInventory;
+    }
+
+    public void displayAvailableRooms(Room[] rooms) {
+        if (rooms == null || rooms.length == 0) {
+            System.out.println("No room information available.");
+            System.out.println("------------------------------------");
+            return;
+        }
+
+        boolean availableRoomFound = false;
+
+        for (Room room : rooms) {
+            if (!isValidRoom(room)) {
+                continue;
+            }
+
+            int availability = roomInventory.getAvailability(room.getRoomType());
+            if (availability <= 0) {
+                continue;
+            }
+
+            printRoomDetails(room, availability);
+            availableRoomFound = true;
+        }
+
+        if (!availableRoomFound) {
+            System.out.println("No rooms are currently available.");
+            System.out.println("------------------------------------");
+        }
+    }
+
+    private boolean isValidRoom(Room room) {
+        return room != null && room.getRoomType() != null && !room.getRoomType().isBlank();
+    }
+
+    private void printRoomDetails(Room room, int availability) {
+        System.out.println("Room Type: " + room.getRoomType());
+        System.out.println("Beds: " + room.getNumberOfBeds());
+        System.out.println("Size: " + room.getSizeInSquareFeet() + " sq ft");
+        System.out.printf("Price Per Night: $%.2f%n", room.getPricePerNight());
+        System.out.println("Available Rooms: " + availability);
         System.out.println("------------------------------------");
     }
 }
