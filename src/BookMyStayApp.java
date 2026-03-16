@@ -15,10 +15,16 @@ public class BookMyStayApp {
         Room[] roomCatalog = {singleRoom, doubleRoom, suiteRoom};
         RoomInventory roomInventory = new RoomInventory(singleRoom, 5, doubleRoom, 3, suiteRoom, 0);
         InventoryService inventoryService = new InventoryService(roomInventory);
+        InvalidBookingValidator invalidBookingValidator = new InvalidBookingValidator(inventoryService);
         SearchService searchService = new SearchService(inventoryService);
-        BookingRequestQueue bookingRequestQueue = new BookingRequestQueue();
+        BookingRequestQueue bookingRequestQueue = new BookingRequestQueue(invalidBookingValidator);
         BookingHistory bookingHistory = new BookingHistory();
-        BookingService bookingService = new BookingService(bookingRequestQueue, inventoryService, bookingHistory);
+        BookingService bookingService = new BookingService(
+                bookingRequestQueue,
+                inventoryService,
+                bookingHistory,
+                invalidBookingValidator
+        );
         BookingReportService bookingReportService = new BookingReportService(bookingHistory);
         AddOnServiceManager addOnServiceManager = new AddOnServiceManager();
 
@@ -32,9 +38,12 @@ public class BookMyStayApp {
 
         System.out.println("Booking Request Intake");
         System.out.println("====================================");
-        bookingRequestQueue.submitRequest(new Reservation("Aarav", singleRoom.getRoomType(), 2));
-        bookingRequestQueue.submitRequest(new Reservation("Maya", doubleRoom.getRoomType(), 3));
-        bookingRequestQueue.submitRequest(new Reservation("Rohan", suiteRoom.getRoomType(), 1));
+        submitBookingRequest(bookingRequestQueue, new Reservation("Aarav", singleRoom.getRoomType(), 2));
+        submitBookingRequest(bookingRequestQueue, new Reservation("Maya", doubleRoom.getRoomType(), 3));
+        submitBookingRequest(bookingRequestQueue, new Reservation("Rohan", suiteRoom.getRoomType(), 1));
+        submitBookingRequest(bookingRequestQueue, new Reservation("", singleRoom.getRoomType(), 2));
+        submitBookingRequest(bookingRequestQueue, new Reservation("Kiara", "Penthouse", 1));
+        submitBookingRequest(bookingRequestQueue, new Reservation("Isha", doubleRoom.getRoomType(), 0));
         bookingRequestQueue.displayPendingRequests();
 
         System.out.println("Booking Allocation");
@@ -81,6 +90,15 @@ public class BookMyStayApp {
             ConfirmedReservation secondReservation = confirmedReservations.get(1);
             addOnServiceManager.addServiceToReservation(secondReservation.getReservationId(),
                     new AddOnService("Late Checkout", 20.00));
+        }
+    }
+
+    private static void submitBookingRequest(BookingRequestQueue bookingRequestQueue, Reservation reservation) {
+        try {
+            bookingRequestQueue.submitRequest(reservation);
+        } catch (BookingValidationException exception) {
+            System.out.println("Booking Validation Error: " + exception.getMessage());
+            System.out.println("------------------------------------");
         }
     }
 }
@@ -152,15 +170,17 @@ class RoomInventory {
         return roomAvailability.getOrDefault(roomType, 0);
     }
 
-    public void updateAvailability(String roomType, int updatedCount) {
+    public boolean hasRoomType(String roomType) {
+        return roomAvailability.containsKey(roomType);
+    }
+
+    public void updateAvailability(String roomType, int updatedCount) throws InventoryStateException {
         if (!roomAvailability.containsKey(roomType)) {
-            System.out.println("Room type not found: " + roomType);
-            return;
+            throw new InventoryStateException("Unknown room type: " + roomType);
         }
 
         if (updatedCount < 0) {
-            System.out.println("Availability cannot be negative for: " + roomType);
-            return;
+            throw new InventoryStateException("Availability cannot be negative for " + roomType + ".");
         }
 
         roomAvailability.put(roomType, updatedCount);
@@ -185,14 +205,21 @@ class InventoryService {
         return roomInventory.getAvailability(roomType);
     }
 
-    public boolean allocateRoom(String roomType) {
+    public boolean isSupportedRoomType(String roomType) {
+        return roomInventory.hasRoomType(roomType);
+    }
+
+    public void allocateRoom(String roomType) throws InventoryStateException {
+        if (!roomInventory.hasRoomType(roomType)) {
+            throw new InventoryStateException("Cannot allocate an unknown room type: " + roomType);
+        }
+
         int currentAvailability = roomInventory.getAvailability(roomType);
         if (currentAvailability <= 0) {
-            return false;
+            throw new InventoryStateException("No " + roomType + " rooms are currently available.");
         }
 
         roomInventory.updateAvailability(roomType, currentAvailability - 1);
-        return true;
     }
 
     public void displayInventory() {
@@ -276,17 +303,15 @@ class Reservation {
 
 class BookingRequestQueue {
     private final Queue<Reservation> bookingRequests;
+    private final InvalidBookingValidator invalidBookingValidator;
 
-    BookingRequestQueue() {
+    BookingRequestQueue(InvalidBookingValidator invalidBookingValidator) {
         bookingRequests = new LinkedList<>();
+        this.invalidBookingValidator = invalidBookingValidator;
     }
 
-    public void submitRequest(Reservation reservation) {
-        if (!isValidReservation(reservation)) {
-            System.out.println("Invalid booking request skipped.");
-            return;
-        }
-
+    public void submitRequest(Reservation reservation) throws BookingValidationException {
+        invalidBookingValidator.validateBookingInput(reservation);
         bookingRequests.offer(reservation);
         System.out.println("Queued request for " + reservation.getGuestName() + " -> "
                 + reservation.getRequestedRoomType());
@@ -327,31 +352,24 @@ class BookingRequestQueue {
             System.out.println("------------------------------------");
         }
     }
-
-    private boolean isValidReservation(Reservation reservation) {
-        return reservation != null
-                && reservation.getGuestName() != null
-                && !reservation.getGuestName().isBlank()
-                && reservation.getRequestedRoomType() != null
-                && !reservation.getRequestedRoomType().isBlank()
-                && reservation.getNumberOfNights() > 0;
-    }
 }
 
 class BookingService {
     private final BookingRequestQueue bookingRequestQueue;
     private final InventoryService inventoryService;
     private final BookingHistory bookingHistory;
+    private final InvalidBookingValidator invalidBookingValidator;
     private final Set<String> allocatedRoomIds;
     private final HashMap<String, Set<String>> allocatedRoomsByType;
     private final HashMap<String, Integer> nextRoomSequenceByType;
     private int nextReservationSequence;
 
     BookingService(BookingRequestQueue bookingRequestQueue, InventoryService inventoryService,
-                   BookingHistory bookingHistory) {
+                   BookingHistory bookingHistory, InvalidBookingValidator invalidBookingValidator) {
         this.bookingRequestQueue = bookingRequestQueue;
         this.inventoryService = inventoryService;
         this.bookingHistory = bookingHistory;
+        this.invalidBookingValidator = invalidBookingValidator;
         allocatedRoomIds = new LinkedHashSet<>();
         allocatedRoomsByType = new HashMap<>();
         nextRoomSequenceByType = new HashMap<>();
@@ -366,11 +384,19 @@ class BookingService {
         }
 
         while (bookingRequestQueue.hasPendingRequests()) {
-            processNextRequest();
+            try {
+                processNextRequest();
+            } catch (BookingValidationException exception) {
+                System.out.println("Booking Processing Error: " + exception.getMessage());
+                System.out.println("------------------------------------");
+            } catch (InventoryStateException exception) {
+                System.out.println("Inventory Error: " + exception.getMessage());
+                System.out.println("------------------------------------");
+            }
         }
     }
 
-    public void processNextRequest() {
+    public void processNextRequest() throws BookingValidationException, InventoryStateException {
         Reservation reservation = bookingRequestQueue.dequeueNextRequest();
         if (reservation == null) {
             System.out.println("No request to process.");
@@ -378,21 +404,10 @@ class BookingService {
             return;
         }
 
+        invalidBookingValidator.validateBookingInput(reservation);
         String roomType = reservation.getRequestedRoomType();
-        if (inventoryService.getAvailability(roomType) <= 0) {
-            System.out.println("Unable to confirm reservation for " + reservation.getGuestName()
-                    + ". No " + roomType + " rooms are available.");
-            System.out.println("------------------------------------");
-            return;
-        }
-
         String assignedRoomId = generateUniqueRoomId(roomType);
-        if (!inventoryService.allocateRoom(roomType)) {
-            System.out.println("Allocation failed for " + reservation.getGuestName()
-                    + ". Inventory changed before confirmation.");
-            System.out.println("------------------------------------");
-            return;
-        }
+        inventoryService.allocateRoom(roomType);
 
         recordAllocation(roomType, assignedRoomId);
         ConfirmedReservation confirmedReservation = createConfirmedReservation(reservation, assignedRoomId);
@@ -436,6 +451,7 @@ class BookingService {
     private void recordAllocation(String roomType, String roomId) {
         allocatedRoomIds.add(roomId);
         allocatedRoomsByType.computeIfAbsent(roomType, key -> new LinkedHashSet<>()).add(roomId);
+        nextRoomSequenceByType.put(roomType, getNextSequenceValue(roomId));
     }
 
     private ConfirmedReservation createConfirmedReservation(Reservation reservation, String assignedRoomId) {
@@ -459,12 +475,16 @@ class BookingService {
             roomId = buildRoomId(roomPrefix, nextSequence);
         }
 
-        nextRoomSequenceByType.put(roomType, nextSequence + 1);
         return roomId;
     }
 
     private String buildRoomId(String roomPrefix, int sequenceNumber) {
         return roomPrefix + "-" + String.format("%03d", sequenceNumber);
+    }
+
+    private int getNextSequenceValue(String roomId) {
+        String numericPortion = roomId.substring(roomId.lastIndexOf('-') + 1);
+        return Integer.parseInt(numericPortion) + 1;
     }
 
     private String getRoomPrefix(String roomType) {
@@ -518,6 +538,38 @@ class ConfirmedReservation {
 
     public String getAssignedRoomId() {
         return assignedRoomId;
+    }
+}
+
+class InvalidBookingValidator {
+    private final InventoryService inventoryService;
+
+    InvalidBookingValidator(InventoryService inventoryService) {
+        this.inventoryService = inventoryService;
+    }
+
+    public void validateBookingInput(Reservation reservation) throws BookingValidationException {
+        if (reservation == null) {
+            throw new BookingValidationException("Reservation input cannot be null.");
+        }
+
+        if (reservation.getGuestName() == null || reservation.getGuestName().isBlank()) {
+            throw new BookingValidationException("Guest name is required.");
+        }
+
+        if (reservation.getRequestedRoomType() == null || reservation.getRequestedRoomType().isBlank()) {
+            throw new BookingValidationException("Room type is required.");
+        }
+
+        if (!inventoryService.isSupportedRoomType(reservation.getRequestedRoomType())) {
+            throw new BookingValidationException(
+                    "Unsupported room type requested: " + reservation.getRequestedRoomType()
+            );
+        }
+
+        if (reservation.getNumberOfNights() <= 0) {
+            throw new BookingValidationException("Number of nights must be greater than zero.");
+        }
     }
 }
 
@@ -679,5 +731,17 @@ class AddOnServiceManager {
                 && addOnService.getServiceName() != null
                 && !addOnService.getServiceName().isBlank()
                 && addOnService.getServiceCost() >= 0;
+    }
+}
+
+class BookingValidationException extends Exception {
+    BookingValidationException(String message) {
+        super(message);
+    }
+}
+
+class InventoryStateException extends Exception {
+    InventoryStateException(String message) {
+        super(message);
     }
 }
