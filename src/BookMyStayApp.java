@@ -1,6 +1,8 @@
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.LinkedList;
+import java.util.List;
 import java.util.Map;
 import java.util.Queue;
 import java.util.Set;
@@ -16,6 +18,7 @@ public class BookMyStayApp {
         SearchService searchService = new SearchService(inventoryService);
         BookingRequestQueue bookingRequestQueue = new BookingRequestQueue();
         BookingService bookingService = new BookingService(bookingRequestQueue, inventoryService);
+        AddOnServiceManager addOnServiceManager = new AddOnServiceManager();
 
         System.out.println("====================================");
         System.out.println("   Welcome to the Hotel Booking System");
@@ -36,13 +39,43 @@ public class BookMyStayApp {
         System.out.println("====================================");
         bookingService.processAllRequests();
 
+        System.out.println("Confirmed Reservations");
+        System.out.println("====================================");
+        bookingService.displayConfirmedReservations();
+
+        System.out.println("Add-On Service Selection");
+        System.out.println("====================================");
+        attachSampleAddOns(bookingService, addOnServiceManager);
+        addOnServiceManager.displaySelectedServices(bookingService.getConfirmedReservations());
+
         System.out.println("Allocated Room Records");
         System.out.println("====================================");
         bookingService.displayAllocatedRooms(roomCatalog);
 
-        System.out.println("Inventory After Allocation");
+        System.out.println("Inventory After Allocation And Add-Ons");
         System.out.println("====================================");
         inventoryService.displayInventory();
+    }
+
+    private static void attachSampleAddOns(BookingService bookingService, AddOnServiceManager addOnServiceManager) {
+        List<ConfirmedReservation> confirmedReservations = bookingService.getConfirmedReservations();
+        if (confirmedReservations.isEmpty()) {
+            System.out.println("No confirmed reservations available for add-on selection.");
+            System.out.println("------------------------------------");
+            return;
+        }
+
+        ConfirmedReservation firstReservation = confirmedReservations.get(0);
+        addOnServiceManager.addServiceToReservation(firstReservation.getReservationId(),
+                new AddOnService("Breakfast Buffet", 18.50));
+        addOnServiceManager.addServiceToReservation(firstReservation.getReservationId(),
+                new AddOnService("Airport Pickup", 35.00));
+
+        if (confirmedReservations.size() > 1) {
+            ConfirmedReservation secondReservation = confirmedReservations.get(1);
+            addOnServiceManager.addServiceToReservation(secondReservation.getReservationId(),
+                    new AddOnService("Late Checkout", 20.00));
+        }
     }
 }
 
@@ -305,6 +338,8 @@ class BookingService {
     private final Set<String> allocatedRoomIds;
     private final HashMap<String, Set<String>> allocatedRoomsByType;
     private final HashMap<String, Integer> nextRoomSequenceByType;
+    private final List<ConfirmedReservation> confirmedReservations;
+    private int nextReservationSequence;
 
     BookingService(BookingRequestQueue bookingRequestQueue, InventoryService inventoryService) {
         this.bookingRequestQueue = bookingRequestQueue;
@@ -312,6 +347,8 @@ class BookingService {
         allocatedRoomIds = new LinkedHashSet<>();
         allocatedRoomsByType = new HashMap<>();
         nextRoomSequenceByType = new HashMap<>();
+        confirmedReservations = new ArrayList<>();
+        nextReservationSequence = 1;
     }
 
     public void processAllRequests() {
@@ -351,11 +388,35 @@ class BookingService {
         }
 
         recordAllocation(roomType, assignedRoomId);
+        ConfirmedReservation confirmedReservation = createConfirmedReservation(reservation, assignedRoomId);
+        confirmedReservations.add(confirmedReservation);
         System.out.println("Reservation confirmed for " + reservation.getGuestName());
+        System.out.println("Reservation ID: " + confirmedReservation.getReservationId());
         System.out.println("Requested Room Type: " + roomType);
         System.out.println("Assigned Room ID: " + assignedRoomId);
         System.out.println("Remaining Availability: " + inventoryService.getAvailability(roomType));
         System.out.println("------------------------------------");
+    }
+
+    public List<ConfirmedReservation> getConfirmedReservations() {
+        return new ArrayList<>(confirmedReservations);
+    }
+
+    public void displayConfirmedReservations() {
+        if (confirmedReservations.isEmpty()) {
+            System.out.println("No reservations have been confirmed.");
+            System.out.println("------------------------------------");
+            return;
+        }
+
+        for (ConfirmedReservation confirmedReservation : confirmedReservations) {
+            System.out.println("Reservation ID: " + confirmedReservation.getReservationId());
+            System.out.println("Guest: " + confirmedReservation.getGuestName());
+            System.out.println("Room Type: " + confirmedReservation.getRoomType());
+            System.out.println("Assigned Room ID: " + confirmedReservation.getAssignedRoomId());
+            System.out.println("Nights: " + confirmedReservation.getNumberOfNights());
+            System.out.println("------------------------------------");
+        }
     }
 
     public void displayAllocatedRooms(Room[] rooms) {
@@ -385,6 +446,17 @@ class BookingService {
     private void recordAllocation(String roomType, String roomId) {
         allocatedRoomIds.add(roomId);
         allocatedRoomsByType.computeIfAbsent(roomType, key -> new LinkedHashSet<>()).add(roomId);
+    }
+
+    private ConfirmedReservation createConfirmedReservation(Reservation reservation, String assignedRoomId) {
+        String reservationId = "RSV-" + String.format("%03d", nextReservationSequence++);
+        return new ConfirmedReservation(
+                reservationId,
+                reservation.getGuestName(),
+                reservation.getRequestedRoomType(),
+                reservation.getNumberOfNights(),
+                assignedRoomId
+        );
     }
 
     private String generateUniqueRoomId(String roomType) {
@@ -419,5 +491,126 @@ class BookingService {
         }
 
         return "ROM";
+    }
+}
+
+class ConfirmedReservation {
+    private final String reservationId;
+    private final String guestName;
+    private final String roomType;
+    private final int numberOfNights;
+    private final String assignedRoomId;
+
+    ConfirmedReservation(String reservationId, String guestName, String roomType, int numberOfNights,
+                         String assignedRoomId) {
+        this.reservationId = reservationId;
+        this.guestName = guestName;
+        this.roomType = roomType;
+        this.numberOfNights = numberOfNights;
+        this.assignedRoomId = assignedRoomId;
+    }
+
+    public String getReservationId() {
+        return reservationId;
+    }
+
+    public String getGuestName() {
+        return guestName;
+    }
+
+    public String getRoomType() {
+        return roomType;
+    }
+
+    public int getNumberOfNights() {
+        return numberOfNights;
+    }
+
+    public String getAssignedRoomId() {
+        return assignedRoomId;
+    }
+}
+
+class AddOnService {
+    private final String serviceName;
+    private final double serviceCost;
+
+    AddOnService(String serviceName, double serviceCost) {
+        this.serviceName = serviceName;
+        this.serviceCost = serviceCost;
+    }
+
+    public String getServiceName() {
+        return serviceName;
+    }
+
+    public double getServiceCost() {
+        return serviceCost;
+    }
+}
+
+class AddOnServiceManager {
+    private final HashMap<String, List<AddOnService>> servicesByReservationId;
+
+    AddOnServiceManager() {
+        servicesByReservationId = new HashMap<>();
+    }
+
+    public void addServiceToReservation(String reservationId, AddOnService addOnService) {
+        if (!isValidServiceSelection(reservationId, addOnService)) {
+            System.out.println("Invalid add-on selection skipped.");
+            return;
+        }
+
+        servicesByReservationId.computeIfAbsent(reservationId, key -> new ArrayList<>()).add(addOnService);
+        System.out.println("Added " + addOnService.getServiceName() + " to " + reservationId);
+    }
+
+    public double calculateAdditionalCost(String reservationId) {
+        List<AddOnService> selectedServices = servicesByReservationId.get(reservationId);
+        if (selectedServices == null) {
+            return 0.0;
+        }
+
+        double totalAdditionalCost = 0.0;
+        for (AddOnService addOnService : selectedServices) {
+            totalAdditionalCost += addOnService.getServiceCost();
+        }
+
+        return totalAdditionalCost;
+    }
+
+    public void displaySelectedServices(List<ConfirmedReservation> confirmedReservations) {
+        if (confirmedReservations.isEmpty()) {
+            System.out.println("No reservations available for add-on reporting.");
+            System.out.println("------------------------------------");
+            return;
+        }
+
+        for (ConfirmedReservation confirmedReservation : confirmedReservations) {
+            String reservationId = confirmedReservation.getReservationId();
+            List<AddOnService> selectedServices = servicesByReservationId.get(reservationId);
+            if (selectedServices == null || selectedServices.isEmpty()) {
+                continue;
+            }
+
+            System.out.println("Reservation ID: " + reservationId);
+            System.out.println("Guest: " + confirmedReservation.getGuestName());
+            for (AddOnService addOnService : selectedServices) {
+                System.out.printf("Service: %s - $%.2f%n",
+                        addOnService.getServiceName(), addOnService.getServiceCost());
+            }
+            System.out.printf("Total Additional Cost: $%.2f%n", calculateAdditionalCost(reservationId));
+            System.out.println("------------------------------------");
+        }
+    }
+
+    private boolean isValidServiceSelection(String reservationId, AddOnService addOnService) {
+        return reservationId != null
+                && !reservationId.isBlank()
+                && addOnService != null
+                && addOnService.getServiceName() != null
+                && !addOnService.getServiceName().isBlank()
+                && addOnService.getServiceCost() >= 0;
     }
 }
